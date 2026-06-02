@@ -176,3 +176,4 @@ React (frontend)  --JWT-->  PHP index.php  --PDO-->  PostgreSQL
 
 *Дисциплина «Системы». Бэкенд: PHP. Клиент: React. СУБД: PostgreSQL.*
 # document_kursovaya
+# document_kursovaya
