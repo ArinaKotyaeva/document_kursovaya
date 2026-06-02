@@ -1,516 +1,178 @@
-# Клиент-серверное приложение «Документ»
+# Курсовая работа «Документ»
 
-Подробное описание курсовой работы: что реализовано по техническому заданию, как устроена система, зачем нужен каждый файл и где именно в коде находится каждая функция.
-
----
-
-## Содержание
-
-1. [Общая идея системы](#1-общая-идея-системы)
-2. [Как работает приложение (поток данных)](#2-как-работает-приложение-поток-данных)
-3. [Структура проекта](#3-структура-проекта)
-4. [Описание каждого файла](#4-описание-каждого-файла)
-5. [Выполнение технического задания по пунктам](#5-выполнение-технического-задания-по-пунктам)
-6. [Роли Admin и Guest](#6-роли-admin-и-guest)
-7. [Дополнительный функционал](#7-дополнительный-функционал)
-8. [Запуск проекта](#8-запуск-проекта)
-9. [Чек-лист для защиты](#9-чек-лист-для-защиты)
+**Бэкенд: PHP** (без фреймворков, слои по ТЗ).  
+**Фронтенд: React** (Vite).  
+**БД: PostgreSQL** (таблицы, views, functions, procedures, triggers).
 
 ---
 
-## 1. Общая идея системы
+## Что не хватало по требованиям КР — и что сделано
 
-Приложение — **электронный реестр учётных документов**. Каждый пользователь в системе — это **персональная учётная карточка** (запись с полями id, имя, email, возраст).
+| Требование | Решение | Где |
+|------------|---------|-----|
+| PostgreSQL, ≥4 таблиц | 6 таблиц | `DB/01_schema.sql` |
+| ≥3 views, functions, procedures, triggers | по 3+ каждого | `DB/02` … `05` |
+| CRUD ≥2 сущностей | реестр + пользователи системы | `/users`, `/app-users` |
+| **Бэкенд на PHP** | основной API | `Source/backend/` |
+| Авторизация | JWT `POST /auth/login` | `AuthService.php`, `AuthMiddleware.php` |
+| Документация API (Swagger) | UI + OpenAPI | `/api/docs`, `openapi.json` |
+| Логирование эндпоинтов | таблица `api_request_logs` | `LoggingMiddleware.php` |
+| React (клиент) | SPA | `Source/frontend/` |
+| Сдача: DB, Documents, Source | папки в корне | `DB/`, `Documents/`, `Source/` |
 
-**Клиент** (браузер) — панель управления: просмотр реестра, добавление и удаление записей (для админа), экспорт отчёта.
-
-**Сервер** (PHP) — REST API: принимает HTTP-запросы, проверяет права и данные, работает с реестром.
-
-Связь — через **HTTP** и **JSON**. База данных **не используется**: данные хранятся в массиве в `UserService`, а для сохранения между запросами Apache — в файле `server/storage/users.json`.
-
----
-
-## 2. Как работает приложение (поток данных)
-
-```
-┌─────────────────┐         HTTP + JSON          ┌──────────────────────────────┐
-│  Браузер        │  ──────────────────────────► │  server/index.php (роутер)   │
-│  client/        │         X-User-Role            │                              │
-│  index.html     │  ◄──────────────────────────  │  1. RoleMiddleware           │
-│  js/app.js      │                                │  2. ValidationMiddleware       │
-└─────────────────┘                                │  3. UserController             │
-        │                                          │  4. UserService                │
-        │ LocalStorage                             │  5. User (модель)              │
-        │ (cachedUsers)                            └──────────────────────────────┘
-        ▼                                                    │
-   Кэш при падении                                           ▼
-   сервера                                          storage/users.json
-```
-
-**Пример: админ добавляет пользователя**
-
-1. Пользователь заполняет форму в `client/index.html` и нажимает «Добавить».
-2. `app.js` → функция `addUser()` отправляет `POST /users` с телом JSON и заголовком `X-User-Role: admin`.
-3. `server/index.php` определяет маршрут и вызывает `RoleMiddleware` → роль разрешена.
-4. `ValidationMiddleware` проверяет name, email, age.
-5. `UserController::store()` вызывает `UserService::create()`.
-6. Сервис добавляет объект `User` в массив, сохраняет в `users.json`, возвращает запись с `id`.
-7. Контроллер отвечает кодом **201** и JSON созданной записи.
-8. Клиент вызывает `fetchUsers()` → таблица обновляется, данные пишутся в LocalStorage.
-
-**Пример: гость открывает страницу**
-
-1. В `switchRole('guest')` скрывается блок `#admin-form-panel` (форма добавления).
-2. В таблице нет кнопок удаления, колонка «Действия» скрыта.
-3. `GET /users` разрешён — гость видит реестр и может скачать отчёт.
+NestJS-черновик перенесён в `Source/_archive_nestjs/` и **не используется**.
 
 ---
 
-## 3. Структура проекта
+## Структура проекта
 
 ```
 kursovaya/
-├── README.md                          ← этот документ
-├── client/                            ← фронтенд
-│   ├── index.html                     ← разметка страницы
-│   ├── css/style.css                  ← оформление
-│   └── js/app.js                      ← логика браузера
-└── server/                            ← бэкенд (PHP)
-    ├── index.php                      ← точка входа, роутер
-    ├── .htaccess                      ← маршрутизация Apache (XAMPP)
-    ├── controllers/UserController.php ← HTTP-ответы
-    ├── services/UserService.php       ← бизнес-логика и хранение
-    ├── middleware/
-    │   ├── RoleMiddleware.php         ← проверка роли
-    │   └── ValidationMiddleware.php   ← валидация POST
-    ├── models/User.php                ← структура записи
-    └── storage/users.json             ← файл данных (создаётся автоматически)
+├── DB/                      SQL, бэкап PostgreSQL
+├── Documents/               пояснительная записка (.docx)
+├── Source/
+│   ├── backend/             PHP API (основной бэкенд)
+│   ├── frontend/            React
+│   ├── legacy-php/          первая учебная PHP-версия (JSON-файл)
+│   └── _archive_nestjs/     не используется
+└── README.md
 ```
 
----
+### PHP-бэкенд (`Source/backend/`)
 
-## 4. Описание каждого файла
-
-### `client/index.html`
-
-**Зачем:** разметка веб-интерфейса — то, что видит пользователь.
-
-**Что содержит:**
-
-| Элемент | Строки (примерно) | Назначение |
-|---------|-------------------|------------|
-| Заголовок «Реестр персональных данных (Документ учёта)» | 11–13 | Тема «Документ» по ТЗ |
-| Переключатель ролей Admin / Guest | 16–27 | Выбор режима клиента |
-| Секция `#admin-form-panel` | 30–48 | Форма добавления (только для админа, скрывается через JS) |
-| Таблица реестра | 58–74 | ID, Имя, Email, Возраст, Действия |
-| Кнопка «Скачать отчёт» | 54 | Экспорт документа |
-| Блоки `#error-message`, `#info-message` | 56–57 | Сообщения об ошибках и кэше |
-| Подключение `js/app.js` | 79 | Логика страницы |
+| Путь | Назначение |
+|------|------------|
+| `index.php` | Роутер, CORS, маршруты |
+| `bootstrap.php` | Загрузка `.env` |
+| `config/Database.php` | PDO → PostgreSQL |
+| `config/AuthContext.php` | Текущий пользователь после JWT |
+| `middleware/AuthMiddleware.php` | Проверка Bearer JWT |
+| `middleware/RoleMiddleware.php` | admin / guest |
+| `middleware/ValidationMiddleware.php` | Валидация POST |
+| `middleware/LoggingMiddleware.php` | Запись в `api_request_logs` |
+| `controllers/*.php` | HTTP-ответы |
+| `services/*.php` | Бизнес-логика |
+| `models/User.php` | Учётная карточка реестра |
+| `openapi.json` + `docs/swagger.html` | Swagger UI |
 
 ---
 
-### `client/css/style.css`
+## Запуск (XAMPP)
 
-**Зачем:** визуальное оформление — отдельный файл стилей по ТЗ.
+### 1. PostgreSQL
 
-**Основные блоки:**
+Выполнить скрипты из `DB/` (порядок в `DB/README.md`).
 
-- CSS-переменные (`:root`) — цвета, тени, скругления.
-- `.container`, `.panel` — карточки разделов (Flexbox/Grid в `.form-grid`, `.table-header`).
-- `.btn-primary`, `.btn-secondary` — кнопки добавления и экспорта.
-- `.error-message`, `.info-message` — стили уведомлений.
-- `.btn-delete` — кнопка-корзина удаления (только admin).
-- `.form-panel[hidden]` — скрытие формы для гостя.
+В `php.ini` XAMPP включить расширения: `extension=pdo_pgsql`, `extension=pgsql`.
 
----
+### 2. PHP API
 
-### `client/js/app.js`
+Скопировать проект в `C:\xampp\htdocs\kursovaya\`.
 
-**Зачем:** вся клиентская логика — запросы к API, таблица, роли, LocalStorage, экспорт.
-
-| Функция / переменная | Строки | Что делает |
-|----------------------|--------|------------|
-| `API_BASE_URL` | 1 | Адрес сервера (`http://localhost/kursovaya/server` для XAMPP) |
-| `STORAGE_KEY` | 2 | Ключ LocalStorage: `cachedUsers` |
-| `currentRole`, `users` | 4–5 | Текущая роль и массив записей на клиенте |
-| `switchRole(role)` | 39–56 | Смена роли: скрывает форму (`adminFormPanel.hidden`), колонку «Действия», перерисовывает таблицу |
-| `renderTable(list)` | 58–89 | Строит строки таблицы; для admin — кнопка удаления |
-| `fetchUsers()` | 155–180 | `GET /users`, обновление таблицы и LocalStorage; при ошибке сети — кэш + сообщение |
-| `addUser(event)` | 182–238 | `POST /users`, обработка ошибок валидации, обновление списка |
-| `deleteUser(id)` | 91–126 | `DELETE /users/{id}` (только admin) |
-| `exportData()` | 252–279 | Перед экспортом `fetchUsers()`, формирует JSON и CSV через `Blob` |
-| `usersToCsv(list)` | 240–250 | Преобразование массива в CSV |
-| `saveUsersToCache` / `loadUsersFromCache` | 137–153 | Запись/чтение LocalStorage |
-| `escapeHtml()` | 128–135 | Защита от вставки HTML в таблицу |
-| Обработчики событий | 292–312 | Смена роли, клик по корзине, submit формы, экспорт |
-
-**Инициализация при загрузке:** `switchRole('admin')` и `fetchUsers()` (строки 311–312).
-
----
-
-### `server/index.php`
-
-**Зачем:** единая точка входа — роутер всех API-запросов.
-
-| Участок кода | Строки | Назначение |
-|--------------|--------|------------|
-| Заголовки JSON и CORS | 5–8 | `Content-Type: application/json`, разрешение запросов из браузера |
-| Обработка OPTIONS | 10–13 | Preflight для CORS |
-| Подключение middleware и контроллера | 15–17 | Загрузка классов |
-| Разбор URI, поддержка XAMPP | 19–27 | Убирает префикс `/kursovaya/server` из пути |
-| Распознавание `/users/{id}` | 32–35 | Regex, извлечение `id` |
-| `RoleMiddleware::handle()` | 37 | Проверка роли **до** контроллера |
-| `GET /users` | 41–44 | Список всех записей |
-| `GET /users/{id}` | 46–49 | Одна запись |
-| `POST /users` | 51–66 | JSON-тело → валидация → `store()` |
-| `DELETE /users/{id}` | 68–71 | Удаление (дополнительно к ТЗ) |
-| Неизвестный маршрут | 73–74 | 404 JSON |
-
----
-
-### `server/.htaccess`
-
-**Зачем:** для Apache (XAMPP) — все запросы вида `/users`, `/users/1` направляются на `index.php`, а не ищут несуществующие файлы.
-
-```
-RewriteRule ^ index.php [L]
+```text
+C:\xampp\htdocs\kursovaya\Source\backend\.env   ← из .env.example
 ```
 
-Без этого при обращении к `http://localhost/kursovaya/server/users` Apache вернул бы 404.
+Запустить **Apache**. API:
 
----
+`http://localhost/kursovaya/Source/backend/users` (с JWT)
 
-### `server/models/User.php`
+**Swagger:** `http://localhost/kursovaya/Source/backend/api/docs`
 
-**Зачем:** модель одной учётной карточки — структура данных по ТЗ.
+### 3. React
 
-| Поле | Тип в коде | Строки |
-|------|------------|--------|
-| `id` | `int` | 7 |
-| `name` | `string` | 8 |
-| `email` | `string` | 9 |
-| `age` | `?int` (необязательное) | 10 |
-
-**`toArray()`** (строки 20–33) — превращает объект в массив для JSON-ответа; поле `age` не включается, если не задано.
-
----
-
-### `server/services/UserService.php`
-
-**Зачем:** бизнес-логика — единственное место, где хранятся и изменяются данные. Контроллер **не трогает** массив напрямую (требование ТЗ).
-
-| Метод | Строки | Назначение |
-|-------|--------|------------|
-| `getInstance()` | 23–30 | Singleton — один экземпляр сервиса |
-| `getAll()` | 32–35 | Все записи как массивы |
-| `findById($id)` | 37–46 | Поиск по id |
-| `create(...)` | 48–56 | Новая запись, `nextId++`, сохранение |
-| `delete($id)` | 58–78 | Удаление из массива (доп. функционал) |
-| `loadFromStorage()` | 80–120 | Загрузка из `users.json` при старте |
-| `saveToStorage()` | 122–139 | Сохранение после create/delete |
-
-**Почему есть `users.json`:** в PHP под Apache каждый HTTP-запрос — отдельный процесс. Без файла данные после POST «пропадали» бы при следующем GET. Файл — техническое решение для сохранения реестра между запросами; логика по-прежнему работает с **массивом в памяти** внутри одного запроса.
-
----
-
-### `server/controllers/UserController.php`
-
-**Зачем:** связь HTTP и сервиса — формирует код ответа и JSON-тело.
-
-| Метод | HTTP | Код | Строки |
-|-------|------|-----|--------|
-| `index()` | GET /users | 200 | 16–19 |
-| `show($id)` | GET /users/{id} | 200 или 404 | 21–31 |
-| `store($payload)` | POST /users | 201 | 33–45 |
-| `destroy($id)` | DELETE /users/{id} | 200 или 404 | 47–55 |
-| `jsonResponse()` | — | любой | 57–61 |
-
----
-
-### `server/middleware/RoleMiddleware.php`
-
-**Зачем:** управление доступом по категориям клиентов (п. 4.5 ТЗ).
-
-| Логика | Строки |
-|--------|--------|
-| Чтение заголовка `X-User-Role` | 31–56 |
-| Допустимые значения: `admin`, `guest` | 7, 52–54 |
-| Нет заголовка / неверное значение → **401** | 13–16 |
-| Guest + POST `/users` → **403** | 18–25 |
-| Guest + DELETE `/users/{id}` → **403** | 19–24 |
-| Ответ `{"error":"Access denied"}` | 23 |
-
----
-
-### `server/middleware/ValidationMiddleware.php`
-
-**Зачем:** ручная валидация данных POST (п. 4.4 ТЗ).
-
-| Поле | Правило | Строки |
-|------|---------|--------|
-| `name` | строка, не пустая, 1–100 символов (`mb_strlen`) | 11–18 |
-| `email` | строка, `filter_var(..., FILTER_VALIDATE_EMAIL)` | 21–25 |
-| `age` | если передано — целое число > 0 | 27–31 |
-| Ошибки | **400**, тело `{"errors":{...}}` | 33–37, 40–45 |
-
-Вызов из `index.php`: строки 59–62 (после разбора JSON-тела).
-
----
-
-### `server/storage/users.json`
-
-**Зачем:** хранилище реестра между запросами.
-
-Создаётся автоматически при первом добавлении записи. Формат:
-
-```json
-{
-  "nextId": 3,
-  "users": [
-    { "id": 1, "name": "...", "email": "...", "age": 20 }
-  ]
-}
+```bash
+cd Source/frontend
+npm install
+npm run dev
 ```
 
-Удаление файла сбрасывает реестр (как перезапуск с пустым состоянием).
+UI: смотрите **точный адрес в терминале** после `npm run dev` (обычно `http://127.0.0.1:5173/`).
 
----
-
-## 5. Выполнение технического задания по пунктам
-
-### Пункт 1. Общая концепция
-
-| Требование ТЗ | Выполнено | Где в коде |
-|---------------|-----------|------------|
-| Реестр учётных документов | Да | Таблица в `index.html` 58–74, данные из API |
-| Пользователь = учётная карточка | Да | Класс `User.php`, строки в таблице из `renderTable()` |
-| Отчётный файл JSON/CSV | Да | `exportData()` в `app.js` 252–279 |
-| HTML/CSS вёрстка | Да | `index.html`, `style.css` |
-| REST API на PHP | Да | `server/index.php` |
-| HTTP-запросы | Да | `fetch()` в `app.js` |
-| Валидация | Да | `ValidationMiddleware.php` |
-| Слои: роуты → middleware → контроллер → сервис | Да | `index.php` → middleware → `UserController` → `UserService` |
-| Роли доступа | Да | `RoleMiddleware.php`, `switchRole()` в `app.js` |
-| LocalStorage | Да | `saveUsersToCache`, `loadUsersFromCache`, ключ `cachedUsers` |
-
----
-
-### Пункт 2. Технологический стек
-
-| Слой | ТЗ | Реализация |
-|------|-----|------------|
-| Бэкенд | PHP без фреймворков | Папка `server/`, чистый PHP |
-| Фронтенд | HTML + CSS + JS | Папка `client/` |
-| Валидация | Своя на PHP | `ValidationMiddleware.php` |
-| Формат | JSON | Все ответы API, тело POST, отчёт JSON |
-| Хранение | Массив в ОЗУ, не БД | `$users` в `UserService.php`; синхронизация через `users.json` для Apache |
-
----
-
-### Пункт 3. Структура проекта
-
-Структура каталогов **соответствует ТЗ** (см. раздел 3). Дополнительно:
-
-- `server/.htaccess` — для XAMPP;
-- `server/storage/` — файл данных;
-- `DELETE` — расширение функционала (удаление для admin).
-
----
-
-### Пункт 4. Серверная часть
-
-#### 4.1. Точка входа и маршрутизация
-
-| Требование | Где |
-|------------|-----|
-| Принимает запросы, определяет метод и URI | `index.php` 19–27 |
-| Три эндпоинта ТЗ (+ DELETE) | `index.php` 41–71 |
-| Middleware перед контроллером | `index.php` 37, 59–62 |
-| Ответы JSON + Content-Type | `index.php` 5, `UserController::jsonResponse` 57–61 |
-
-#### 4.2. Модель данных
-
-| Поле | ТЗ | Код |
-|------|-----|-----|
-| id | integer, уникальный, автогенерация | `User.php` 7; `UserService::create()` 50–52 |
-| name | string, обязательное | `User.php` 8 |
-| email | string, обязательное | `User.php` 9 |
-| age | integer, необязательное, > 0 | `User.php` 10; валидация `ValidationMiddleware` 27–31 |
-
-#### 4.3. Эндпоинты API
-
-| Эндпоинт | ТЗ | Код ответа | Файл, метод |
-|----------|-----|------------|-------------|
-| GET /users | Список JSON-массивом | 200 | `UserController::index()` |
-| GET /users/{id} | Одна запись / 404 | 200 / 404 | `UserController::show()` |
-| POST /users | Создание / 201 / 400 | 201 / 400 | `index.php` 51–66, `store()` |
-
-#### 4.4. Валидация
-
-Все правила — `ValidationMiddleware.php` 7–37. Ответ 400 — `respondValidationError()` 40–45.
-
-#### 4.5. Управление доступом
-
-`RoleMiddleware.php` полностью. Таблица прав — раздел [6](#6-роли-admin-и-guest).
-
-#### 4.6. Архитектурное разделение
-
-- **Middleware** — только проверки (`RoleMiddleware`, `ValidationMiddleware`).
-- **Controller** — HTTP-коды и JSON, вызовы сервиса.
-- **Service** — массив, id, create/find/delete.
-- Контроллер **не изменяет** `$users` напрямую — только `$this->service->...`.
-
----
-
-### Пункт 5. Клиентская часть
-
-#### 5.1. HTML/CSS
-
-| Элемент ТЗ | Где |
-|------------|-----|
-| Заголовок «Документ учёта» | `index.html` 12 |
-| Переключатель Admin/Guest | `index.html` 18–26 |
-| Форма Name, Email, Age | `index.html` 30–48 |
-| Таблица ID, Имя, Email, Возраст | `index.html` 61–67, `renderTable()` |
-| «Скачать отчёт» | `index.html` 54 |
-| Блок ошибок | `index.html` 56, класс `.error-message` |
-| Отдельный style.css | `client/css/style.css` |
-
-#### 5.2. JavaScript — функции по ТЗ
-
-| Функция ТЗ | Файл | Строки |
-|------------|------|--------|
-| `fetchUsers()` | `app.js` | 155–180 |
-| `addUser()` | `app.js` | 182–238 |
-| `renderTable(users)` | `app.js` | 58–89 |
-| `exportData()` | `app.js` | 252–279 |
-| `switchRole(role)` | `app.js` | 39–56 |
-
-#### 5.3. Управление доступом на клиенте
-
-| Требование | Где |
-|------------|-----|
-| По умолчанию admin | `app.js` 311 `switchRole('admin')` |
-| Guest: форма скрыта | `adminFormPanel.hidden = true` 43–45 |
-| Guest: нельзя добавить | форма скрыта; запасная проверка в `addUser()` 187–190 |
-| Admin: всё доступно | форма видна, POST и DELETE работают |
-
-#### 5.4. LocalStorage
-
-| Требование | Где |
-|------------|-----|
-| Запись при успешном GET | `fetchUsers()` → `saveUsersToCache()` 173–174 |
-| Чтение при ошибке сети | `fetchUsers()` catch 176–178 |
-| Ключ `cachedUsers` | `app.js` 2 |
-| Сообщение о кэше | `showInfo('Сервер недоступен...')` 178 |
-
----
-
-### Пункт 6. Чек-лист «на 5»
-
-| Критерий | Статус | Как проверить |
-|----------|--------|---------------|
-| Три эндпоинта работают | ✓ | GET list, GET by id, POST create |
-| Валидация name/email | ✓ | POST с пустым name → 400 |
-| Guest → 403 на POST | ✓ | Роль Guest, или curl с `X-User-Role: guest` |
-| Слои разделены | ✓ | Структура `server/` |
-| Данные без MySQL | ✓ | `UserService` + `users.json` |
-| Интерфейс, тема «Документ» | ✓ | Заголовок, отчёт `document-report-*.json` |
-| Роли, блокировка для гостя | ✓ | Переключатель, скрытая форма |
-| LocalStorage | ✓ | DevTools → Application |
-| Кэш при падении сервера | ✓ | Остановить Apache, F5 |
-| Скачать отчёт с записями | ✓ | Кнопка после добавления данных |
-
----
-
-## 6. Роли Admin и Guest
-
-### Зачем нужны
-
-По ТЗ — **категории клиентов** с разными правами. Имитация ситуации: администратор ведёт реестр, гость только просматривает.
-
-### Таблица прав
-
-| Действие | Admin | Guest |
-|----------|-------|-------|
-| GET /users | ✓ | ✓ |
-| GET /users/{id} | ✓ | ✓ |
-| POST /users | ✓ | ✗ 403 |
-| DELETE /users/{id} | ✓ | ✗ 403 |
-
-### Где проверяется
-
-**Сервер (главная проверка):** `RoleMiddleware.php` 9–28.
-
-**Клиент (удобство):**
-
-- скрыта форма добавления — `switchRole()` 43–45;
-- скрыта колонка «Действия» и кнопки корзины — 47–49, `renderTable()` 60–78;
-- заголовок `X-User-Role` в каждом `fetch` — например `fetchUsers()` 162–164.
-
-Даже если обойти интерфейс, сервер отклонит запрещённые действия.
-
----
-
-## 7. Дополнительный функционал
-
-Реализовано сверх базового ТЗ:
-
-| Функция | Описание | Код |
-|---------|----------|-----|
-| Удаление записи | Кнопка-корзина у admin | `deleteUser()`, `UserService::delete()`, `DELETE` в `index.php` |
-| Скрытие формы для Guest | Вся секция «Добавить учётную карточку» | `#admin-form-panel`, `switchRole()` |
-| Экспорт CSV | Второй файл отчёта | `usersToCsv()`, `exportData()` |
-| Работа в XAMPP | .htaccess, базовый путь URI | `.htaccess`, `index.php` 22–25 |
-| CORS | Запросы из браузера | `index.php` 6–8 |
-
-После удаления запись **исчезает из таблицы и из отчёта**, т.к. `exportData()` сначала вызывает `fetchUsers()` с актуальными данными сервера.
-
----
-
-## 8. Запуск проекта
-
-### XAMPP (основной способ)
-
-1. Папка проекта: `C:\xampp\htdocs\kursovaya\`
-2. XAMPP Control Panel → **Start** у Apache
-3. Браузер: `http://localhost/kursovaya/client/index.html`
-4. В `client/js/app.js` строка 1: `API_BASE_URL = 'http://localhost/kursovaya/server'`
-
-### Встроенный PHP-сервер
+Если `ERR_CONNECTION_REFUSED` на 5173 — порт занят. Освободите его:
 
 ```powershell
-C:\xampp\php\php.exe -S localhost:8000 -t server server/index.php
+Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
 ```
 
-В `app.js` заменить URL на `http://localhost:8000`, открыть `client/index.html`.
+Затем снова `npm run dev`. Если Vite пишет `5174` — откройте **http://127.0.0.1:5174/**.
 
-### Примеры API (PowerShell)
+### Вход
 
-```powershell
-Invoke-RestMethod -Uri "http://localhost/kursovaya/server/users" -Headers @{ "X-User-Role" = "admin" }
-```
+| Email | Пароль | Роль |
+|-------|--------|------|
+| admin@document.local | admin123 | admin |
+| guest@document.local | guest123 | guest |
 
-```powershell
-Invoke-RestMethod -Uri "http://localhost/kursovaya/server/users" -Method Post -Headers @{ "X-User-Role" = "admin"; "Content-Type" = "application/json" } -Body '{"name":"Анна","email":"anna@mail.ru","age":22}'
-```
+Если при входе **Invalid credentials** — один раз откройте в браузере:
+
+`http://localhost/kursovaya/Source/backend/tools/install.php`
+
+(создаст пользователей в PostgreSQL; нужны выполненные `DB/01_schema.sql` и запущенный PostgreSQL).
 
 ---
 
-## 9. Чек-лист для защиты
+## Как протестировать всё по шагам
 
-Кратко, что показать преподавателю:
-
-1. **Запуск** — страница через `http://localhost/kursovaya/client/index.html`, Apache включён.
-2. **Admin** — добавить 2–3 записи, они в таблице.
-3. **Отчёт** — скачать JSON/CSV, внутри есть `records` с теми же данными.
-4. **Удаление** — корзина, запись пропала из таблицы и из нового отчёта.
-5. **Guest** — форма добавления исчезла, удаления нет, список и отчёт доступны.
-6. **Сервер** — показать структуру `server/`, цепочку index → middleware → controller → service.
-7. **Валидация** — попробовать пустое имя или email `test` → сообщение об ошибке.
-8. **LocalStorage** — F12 → Application → `cachedUsers`.
-9. **Кэш** — остановить Apache, обновить страницу → сообщение о кэшированных данных.
+| Шаг | Что проверить | Ожидание |
+|-----|---------------|----------|
+| 1 | PostgreSQL запущен, база `document_kursovaya` создана | pgAdmin / служба PostgreSQL |
+| 2 | Выполнены `DB/01` … `06` SQL или `tools/install.php` | Пользователи в БД |
+| 3 | Apache Start, файл `Source/backend/.env` | — |
+| 4 | `http://localhost/kursovaya/Source/backend/tools/install.php` | «Подключение OK», 2 пользователя |
+| 5 | `http://localhost/kursovaya/Source/backend/api/docs` | Swagger UI |
+| 6 | `npm run dev` в `Source/frontend` | `http://127.0.0.1:5173/` |
+| 7 | Вход admin@document.local / admin123 | Реестр, форма добавления |
+| 8 | Выйти → guest@document.local / guest123 | Без формы, только просмотр |
+| 9 | «Скачать отчёт» | JSON-файл с записями |
+| 10 | Добавить и удалить запись (admin) | Таблица обновляется |
 
 ---
 
-*Курсовая работа по дисциплине «Системы». Тема: клиент-серверное приложение «Документ».*
+## API (кратко)
+
+| Метод | Путь | Auth | Описание |
+|-------|------|------|----------|
+| POST | `/auth/login` | — | JWT |
+| GET | `/users` | JWT | Список реестра |
+| POST | `/users` | JWT admin | Создать |
+| DELETE | `/users/{id}` | JWT admin | Удалить (процедура БД) |
+| GET | `/reports/export` | JWT | Отчёт JSON |
+| GET | `/app-users` | JWT admin | Пользователи системы |
+
+Полное описание — в Swagger.
+
+---
+
+## Архитектура
+
+```
+React (frontend)  --JWT-->  PHP index.php  --PDO-->  PostgreSQL
+                                |
+                                +-- Swagger /api/docs
+                                +-- LoggingMiddleware
+```
+
+Слои PHP (как в учебном ТЗ): **роутер → middleware → controller → service → БД**.
+
+---
+
+## Пояснительная записка
+
+Черновик разделов: `Documents/POYASNITELNAYA_ZAPISKA_SODERZHANIE.md`  
+Оформить в Word по ГОСТ 7.32-2017, положить в `Documents/`.
+
+---
+
+## Сдача
+
+Каталог: `БИВТ-24-1_Фамилия_ИО_вариант_Документ/`
+
+- `DB/` — `pg_dump` бэкап  
+- `Documents/` — .docx  
+- `Source/` — код PHP + React  
+
+---
+
+*Дисциплина «Системы». Бэкенд: PHP. Клиент: React. СУБД: PostgreSQL.*
+# document_kursovaya
